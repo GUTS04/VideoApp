@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: videoapp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-videoapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-videoapp}
+      POSTGRES_DB: ${POSTGRES_DB:-videoapp}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-videoapp} -d ${POSTGRES_DB:-videoapp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: videoapp-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-videoapp}:${POSTGRES_PASSWORD:-videoapp}@db:5432/${POSTGRES_DB:-videoapp}
+    ports:
+      - "${PORT:-8001}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
