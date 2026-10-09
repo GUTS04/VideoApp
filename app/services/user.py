@@ -4,9 +4,11 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.security import hash_password
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate
+from app.services.coins import CoinService
 
 
 class UserService:
@@ -41,15 +43,20 @@ class UserService:
                 detail="Username already taken",
             )
 
+        settings = get_settings()
         user = User(
             email=payload.email,
             username=payload.username,
             gender=payload.gender,
             hashed_password=hash_password(payload.password),
+            coin_balance=0,
         )
         db.add(user)
         db.commit()
         db.refresh(user)
+        if settings.initial_coin_balance > 0:
+            CoinService.grant_initial_balance(db, user)
+            db.refresh(user)
         return user
 
     @staticmethod

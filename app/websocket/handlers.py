@@ -90,6 +90,7 @@ class MessagingHandler:
             await self.manager.broadcast(announcement.model_dump())
 
     async def handle_raw_message(self, raw: str) -> None:
+        logger.info("WS MESSAGE user_id=%s connection_id=%s raw=%s", self.user.id, self.connection_id, raw)
         if raw.strip().lower() == "ping":
             await self.send_event(self.connection_id, PongEvent().model_dump())
             return
@@ -122,6 +123,10 @@ class MessagingHandler:
             await self._handle_webrtc_answer(data)
         elif message_type == "ice_candidate":
             await self._handle_ice_candidate(data)
+        elif message_type == "call_connected":
+            await self._handle_call_connected(data)
+        elif message_type == "call_ended":
+            await self._handle_call_ended(data)
         else:
             await self.send_error(
                 ErrorCode.UNKNOWN_TYPE,
@@ -210,8 +215,10 @@ class MessagingHandler:
         except ValidationError as exc:
             await self._validation_error(exc)
             return
+        logger.info("RECEIVED join_queue from user_id=%s", self.user.id)
         error = await matchmaking_service.join_queue(self.user, self.manager)
         if error:
+            logger.warning("JOIN_QUEUE_FAILED user_id=%s error=%s", self.user.id, error)
             await self.send_event(self.connection_id, error)
 
     async def _handle_leave_queue(self, data: dict[str, Any]) -> None:
@@ -264,6 +271,67 @@ class MessagingHandler:
         error = await signaling.handle_ice_candidate(self.user, data, self.manager)
         if error:
             await self.send_event(self.connection_id, error)
+
+    async def _handle_call_connected(self, data: dict[str, Any]) -> None:
+        from app.matchmaking.service import matchmaking_service
+        from app.schemas.calls import CallBillingUpdateEvent, IncomingCallConnected
+        from app.services.calls import CallService
+        from app.services.coins import CoinService
+
+        try:
+            incoming = IncomingCallConnected.model_validate(data)
+        except ValidationError as exc:
+            await self._validation_error(exc)
+            return
+
+        db: Session = SessionLocal()
+        try:
+            session = CallService.mark_user_connected(
+                db, match_id=incoming.match_id, user_id=self.user.id
+            )
+            CallService.bill_incremental(db, session)
+            db.refresh(session)
+
+            if session.status == "terminated_insufficient_funds":
+                await matchmaking_service.terminate_match_for_billing(
+                    incoming.match_id,
+                    ws_manager=self.manager,
+                    broke_user_id=self.user.id,
+                )
+                return
+
+            balance = CoinService.get_balance(db, self.user.id)
+            duration = CallService._billable_seconds(session)
+            charged = (
+                session.user_a_coins_charged
+                if self.user.id == session.user_a_id
+                else session.user_b_coins_charged
+            )
+            event = CallBillingUpdateEvent(
+                match_id=incoming.match_id,
+                coin_balance=balance,
+                call_duration_seconds=duration,
+                coins_charged=charged,
+            )
+            await self.send_event(self.connection_id, event.model_dump())
+        finally:
+            db.close()
+
+    async def _handle_call_ended(self, data: dict[str, Any]) -> None:
+        from app.schemas.calls import IncomingCallEnded
+        from app.services.calls import CallService
+
+        try:
+            incoming = IncomingCallEnded.model_validate(data)
+        except ValidationError as exc:
+            await self._validation_error(exc)
+            return
+
+        db: Session = SessionLocal()
+        try:
+            CallService.end_by_match_id(db, incoming.match_id, reason="ended")
+        finally:
+            db.close()
 
     async def _validation_error(self, exc: ValidationError) -> None:
         await self.send_error(

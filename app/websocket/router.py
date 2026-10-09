@@ -52,6 +52,7 @@ async def websocket_connect(websocket: WebSocket) -> None:
 
     client = await manager.connect(user, websocket)
     connection_id = client.connection_id
+    logger.info("WS CONNECTED user_id=%s connection_id=%s", user.id, connection_id)
     handler = MessagingHandler(connection_id=connection_id, user=user, ws_manager=manager)
 
     try:
@@ -62,7 +63,7 @@ async def websocket_connect(websocket: WebSocket) -> None:
             await handler.handle_raw_message(raw)
 
     except WebSocketDisconnect:
-        logger.debug("Client disconnected connection_id=%s", connection_id)
+        logger.debug("WS DISCONNECTED connection_id=%s", connection_id)
     except Exception:
         logger.exception("WebSocket error connection_id=%s", connection_id)
         try:

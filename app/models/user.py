@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +21,7 @@ class User(Base):
     gender: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    coin_balance: Mapped[int] = mapped_column(Integer, nullable=False, default=500, server_default="500")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -36,6 +37,35 @@ class User(Base):
     refresh_tokens = relationship(
         "RefreshToken",
         back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    coin_transactions = relationship(
+        "CoinTransaction",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    blocks_initiated = relationship(
+        "UserBlock",
+        foreign_keys="UserBlock.blocker_id",
+        back_populates="blocker",
+        cascade="all, delete-orphan",
+    )
+    blocks_received = relationship(
+        "UserBlock",
+        foreign_keys="UserBlock.blocked_id",
+        back_populates="blocked",
+        cascade="all, delete-orphan",
+    )
+    reports_filed = relationship(
+        "UserReport",
+        foreign_keys="UserReport.reporter_id",
+        back_populates="reporter",
+        cascade="all, delete-orphan",
+    )
+    reports_received = relationship(
+        "UserReport",
+        foreign_keys="UserReport.reported_id",
+        back_populates="reported",
         cascade="all, delete-orphan",
     )
 

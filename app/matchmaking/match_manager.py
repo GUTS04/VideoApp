@@ -45,6 +45,9 @@ class MatchManager:
             return None
         return self._matches.get(match_id)
 
+    def get_match_by_id(self, match_id: str) -> ActiveMatch | None:
+        return self._matches.get(match_id)
+
     def create_match(
         self,
         *,

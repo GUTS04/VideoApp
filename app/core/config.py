@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 30
     jwt_refresh_token_expire_days: int = 7
 
+    initial_coin_balance: int = 500
+
+    turn_urls: str = ""
+    turn_username: str = ""
+    turn_credential: str = ""
+
     @property
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret_key or self.secret_key

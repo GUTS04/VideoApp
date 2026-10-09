@@ -5,7 +5,14 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import get_settings
 from app.database.base import Base
-from app.models import RefreshToken, User  # noqa: F401 — register models for autogenerate
+from app.models import (  # noqa: F401 — register models for autogenerate
+    CallSession,
+    CoinTransaction,
+    RefreshToken,
+    User,
+    UserBlock,
+    UserReport,
+)
 
 config = context.config
 settings = get_settings()

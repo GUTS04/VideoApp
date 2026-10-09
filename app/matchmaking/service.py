@@ -2,9 +2,12 @@ import logging
 import uuid
 from typing import Any, Literal
 
+from app.database.session import SessionLocal
 from app.matchmaking.match_manager import MatchManager
 from app.matchmaking.queue_manager import QueueManager
 from app.models.user import User
+from app.services.blocks import BlockService
+from app.services.calls import CallService
 from app.schemas.gender import partner_gender_for
 from app.schemas.matchmaking import (
     MatchFoundEvent,
@@ -27,6 +30,14 @@ class MatchmakingService:
         self.matches = MatchManager()
 
     async def join_queue(self, user: User, ws_manager: ConnectionManager) -> dict[str, Any] | None:
+        logger.info(
+            "JOIN_QUEUE_START user_id=%s username=%s gender=%s queue_size=%s active_matches=%s",
+            user.id,
+            user.username,
+            user.gender,
+            self.queue.size,
+            self.matches.active_match_count,
+        )
         if self.matches.is_matched(user.id):
             return self._error(
                 ErrorCode.ALREADY_IN_MATCH,
@@ -36,11 +47,26 @@ class MatchmakingService:
         if self.queue.is_queued(user.id):
             return self._error(ErrorCode.ALREADY_IN_QUEUE, "You are already in the matchmaking queue")
 
-        partner_entry = self.queue.pop_next_compatible_partner(
-            exclude_user_id=user.id,
-            seeker_gender=user.gender,
-        )
+        db = SessionLocal()
+        try:
+            def can_match_with(entry) -> bool:
+                return not BlockService.is_blocked(db, user.id, entry.user_id)
+
+            partner_entry = self.queue.pop_next_compatible_partner(
+                exclude_user_id=user.id,
+                seeker_gender=user.gender,
+                can_match_with=can_match_with,
+            )
+        finally:
+            db.close()
         if partner_entry:
+            logger.info(
+                "MATCH PARTNER_FOUND seeker=%s(%s) partner=%s(%s)",
+                user.id,
+                user.gender,
+                partner_entry.user_id,
+                partner_entry.gender,
+            )
             return await self._create_match_and_notify(
                 user_a_id=user.id,
                 user_a_username=user.username,
@@ -52,6 +78,7 @@ class MatchmakingService:
             )
 
         entry = self.queue.add(user.id, user.username, user.gender)
+        logger.info("USER ADDED TO QUEUE user_id=%s gender=%s", entry.user_id, entry.gender)
         position = self.queue.position(entry.user_id) or self.queue.size
         waiting_opposite = self.queue.waiting_count_for_partner_gender(user.gender)
         event = QueueJoinedEvent(queue_size=self.queue.size, position=position)
@@ -63,6 +90,7 @@ class MatchmakingService:
             position,
             waiting_opposite,
         )
+        logger.info("CURRENT QUEUE STATE %s", self.queue.snapshot())
         return None
 
     async def leave_queue(self, user: User, ws_manager: ConnectionManager) -> dict[str, Any] | None:
@@ -133,8 +161,20 @@ class MatchmakingService:
         await self._notify_match_found(
             match.match_id, user_b_id, user_a_id, user_a_username, user_a_gender, ws_manager
         )
+
+        db = SessionLocal()
+        try:
+            CallService.create_pending_session(
+                db,
+                match_id=match.match_id,
+                user_a_id=user_a_id,
+                user_b_id=user_b_id,
+            )
+        finally:
+            db.close()
+
         logger.info(
-            "Match %s: %s (%s) <-> %s (%s)",
+            "MATCH FOUND match_id=%s user_a=%s(%s) user_b=%s(%s)",
             match.match_id,
             user_a_id,
             user_a_gender,
@@ -160,7 +200,14 @@ class MatchmakingService:
                 gender=partner_gender,
             ),
         )
-        await ws_manager.send_to_user(user_id, event.model_dump())
+        sent = await ws_manager.send_to_user(user_id, event.model_dump())
+        logger.info(
+            "SENT match_found user_id=%s partner_id=%s match_id=%s delivered_connections=%s",
+            user_id,
+            partner_id,
+            match_id,
+            sent,
+        )
 
     async def _end_match_for_user(
         self,
@@ -174,10 +221,17 @@ class MatchmakingService:
         if not match:
             return
 
+        match_id = match.match_id
         partner = match.partner_of(user_id)
-        ended = self.matches.end_match(match.match_id)
+        ended = self.matches.end_match(match_id)
         if not ended or not partner:
             return
+
+        db = SessionLocal()
+        try:
+            CallService.end_by_match_id(db, match_id, reason="ended")
+        finally:
+            db.close()
 
         partner_id, _partner_username = partner
         messages = {
@@ -231,6 +285,45 @@ class MatchmakingService:
             "message": message,
             "details": details,
         }
+
+    async def terminate_match_for_billing(
+        self,
+        match_id: str,
+        *,
+        ws_manager: ConnectionManager,
+        broke_user_id: uuid.UUID,
+    ) -> None:
+        match = self.matches.get_match_by_id(match_id)
+        if not match:
+            return
+        user_a_id = match.user_a_id
+        user_b_id = match.user_b_id
+        self.matches.end_match(match_id)
+
+        db = SessionLocal()
+        try:
+            CallService.end_by_match_id(db, match_id, reason="insufficient_funds")
+        finally:
+            db.close()
+
+        from app.schemas.calls import CallTerminatedEvent
+
+        event = CallTerminatedEvent(
+            match_id=match_id,
+            reason="insufficient_funds",
+            message="Call ended — insufficient coin balance",
+        )
+        await ws_manager.send_to_user(user_a_id, event.model_dump())
+        await ws_manager.send_to_user(user_b_id, event.model_dump())
+
+        partner_msg = PartnerDisconnectedEvent(
+            match_id=match_id,
+            partner=PartnerInfo(user_id=str(broke_user_id), username=""),
+            reason="match_ended",
+            message="Call ended due to insufficient coins",
+        )
+        other_id = user_b_id if broke_user_id == user_a_id else user_a_id
+        await ws_manager.send_to_user(other_id, partner_msg.model_dump())
 
     def status_snapshot(self) -> dict[str, Any]:
         return {

@@ -1,5 +1,6 @@
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -56,6 +57,7 @@ class QueueManager:
         *,
         exclude_user_id: uuid.UUID,
         seeker_gender: str,
+        can_match_with: Callable[[QueueEntry], bool] | None = None,
     ) -> QueueEntry | None:
         """
         Remove and return the first queued user with opposite gender (FIFO among valid entries).
@@ -66,6 +68,8 @@ class QueueManager:
             if entry.user_id == exclude_user_id:
                 continue
             if entry.gender != required_partner_gender:
+                continue
+            if can_match_with is not None and not can_match_with(entry):
                 continue
             del self._queue[index]
             self._user_ids.discard(entry.user_id)

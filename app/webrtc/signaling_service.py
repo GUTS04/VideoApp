@@ -95,8 +95,10 @@ class WebRtcSignalingService:
         build_event: Any,
         label: str,
     ) -> dict[str, Any] | None:
+        logger.info("SIGNALING_RECEIVED type=%s from_user_id=%s", label, user.id)
         match = self.matches.get_match_for_user(user.id)
         if not match:
+            logger.warning("SIGNALING_REJECTED_NOT_IN_MATCH type=%s from_user_id=%s", label, user.id)
             return self._error(
                 ErrorCode.NOT_IN_MATCH,
                 "WebRTC signaling is only allowed during an active match",
@@ -144,6 +146,13 @@ class WebRtcSignalingService:
 
         delivered = await ws_manager.send_to_user(partner_id, outbound)
         if delivered == 0:
+            logger.warning(
+                "SIGNALING_DELIVERY_FAILED type=%s from_user_id=%s partner_id=%s match_id=%s",
+                label,
+                user.id,
+                partner_id,
+                match.match_id,
+            )
             return self._error(
                 ErrorCode.USER_OFFLINE,
                 "Matched partner is offline",
